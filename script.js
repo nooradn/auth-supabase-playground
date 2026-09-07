@@ -1,23 +1,59 @@
-// ─── Init ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  INITIALIZATION — bikin Supabase client
+// ══════════════════════════════════════════════════════════
+//
+//  SUPABASE_URL    = endpoint project kamu (tempat data & auth
+//                    server jalan, di-hosting oleh Supabase)
+//  SUPABASE_ANON   = "anonymous" key. Publish key, AMAN dipakai
+//                    di frontend. Bukan rahasia (beda dengan
+//                    service_role key yang TIDAK boleh bocor).
+//
+//  Kenapa pake `supabase.createClient`?
+//  - Variable `supabase` datang dari CDN (script di index.html).
+//    CDN itu men-declare GLOBAL `supabase` (nama bentrok kalau kita
+//    declare `const supabase` sendiri — itu error yang kamu pernah
+//    alami).
+//  - Kita cuma "baca" global itu untuk bikin client, hasilnya kita
+//    simpan di variable `client` dengan nama sendiri.
+//
 const SUPABASE_URL  = 'https://moekyeviywfdkvtcvqsu.supabase.co';
 const SUPABASE_ANON = 'sb_publishable_vRr5qVC9K7DvrMem-ceEyQ_hjHd19-x';
 const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
+// Hitung jumlah log yang tampil (buat badge count di header)
 let logCount = 0;
 
-// ─── Logging ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  LOGGING UTILITY — render satu baris log ke panel kiri
+// ══════════════════════════════════════════════════════════
+//
+//  Ini bantuan buat belajar, bukan bagian dari Supabase. Semua
+//  hasil auth operation kita tampilkan di `#logs` biar kamu bisa
+//  lihat apa yang sebenarnya terjadi.
+//
+//  type:   jenis log → menentukan warna label (info/success/error/warn/action)
+//  message: teks singkat yang menjelaskan apa yang terjadi
+//  data:   optional, object apa pun → dipretty-print sebagai JSON
+//
 function log(type, message, data) {
   const logsEl = document.getElementById('logs');
   const entry = document.createElement('div');
   entry.className = 'log-entry';
+
+  // Format waktu lokal supaya tiap log keliatan urutan waktunya
   const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+  // Kalau `data` dikasih, render jadi <pre> JSON yang rapi
   const dataBlock = data !== undefined ? `<pre>${JSON.stringify(data, null, 2)}</pre>` : '';
+
   entry.innerHTML = `
     <span class="log-time">${time}</span>
     <span class="log-type ${type}">${type}</span>
     ${message}
     ${dataBlock}
   `;
+
+  // prepend (bukan append): log TERBARU di ATAS
   logsEl.prepend(entry);
   logCount++;
   document.getElementById('logCount').textContent = logCount;
@@ -29,11 +65,35 @@ function clearLogs() {
   document.getElementById('logCount').textContent = 0;
 }
 
-// ─── Status Badge ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  SESSION vs USER — dua konsep yang harus dipahamin bedanya
+// ══════════════════════════════════════════════════════════
+//
+//  Supabase pakai JWT (JSON Web Token) untuk auth.
+//
+//  SESSION = paket "kartu tanda masuk" berisi access token.
+//    - Tersimpan otomatis di localStorage browser (bukan di kode).
+//    - Punya masa berlaku (expires_at), dan di-refresh otomatis
+//      sama library kalau masih valid.
+//    - Sesi "ada" artinya client punya JWT yang bole dipakai.
+//
+//  USER = data identitas orang yang login (id, email, metadata).
+//    Cache dari JWT; bisa di-refresh dari server via getUser().
+//
+//  refreshStatus() dipanggil setelah hampir semua operasi, buat
+//  memperbarui badge "Authenticated / No Session" + kartu user di kanan.
+//
 async function refreshStatus() {
   const badge = document.getElementById('statusBadge');
   const card = document.getElementById('userCard');
+
+  // getSession() = Cek localStorage, "punya sesi aktif atau nggak?"
+  // Catatan pola Supabase: hasil selalu dibungkus `{ data, error }`,
+  // bukan `throw` exception. Kita selalu cek error-nya dulu.
   const { data: { session } } = await client.auth.getSession();
+
+  // Destructuring: `data: { session }` artinya ambil `data.session`
+  // dari object hasil, lalu simpan ke variable bernama `session`.
 
   if (session) {
     badge.className = 'status authenticated';
@@ -48,17 +108,36 @@ async function refreshStatus() {
   }
 }
 
-// ─── Auth Actions ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  AUTH ACTIONS
+// ══════════════════════════════════════════════════════════
+
+// ── SIGN UP ─────────────────────────────────────────────
+// Membuat user baru di Supabase Auth.
+// Kalau "Confirm email" diaktifkan di dashboard → user dibuat
+// TAPI belum bisa login sampai email dikonfirmasi lewat link yang
+// dikirim Supabase. `data.session` bakal null dalam kasus itu.
+// Kalau confirm email dimatikan → langsung `data.session` terisi
+// dan user otomatis sudah login.
 async function signUp() {
+  // Baca input form & trim (buang spasi di pinggir); password TIDAK
+  // di-trim karena spasi dalam password itu valid.
   const email = document.getElementById('signupEmail').value.trim();
   const password = document.getElementById('signupPassword').value;
   log('action', `signUp("${email}")`);
 
+  // Semua method auth itu ASYNC → makanya pakai `await`.
+  // Saat `await`, UI nggak ngeblock; server dipanggil via HTTP,
+  // kemudian hasilnya {data, error} dikembalikan.
   const { data, error } = await client.auth.signUp({ email, password });
+
+  // Supabase TIDAK pakai try/catch untuk error normal — `error`
+  // diisi object error kalau gagal, atau null/undefined kalau sukses.
   if (error) {
     log('error', error.message, error);
   } else {
     log('success', 'signUp — check email for confirmation', data);
+    // data.session terisi HANYA kalau email confirmation NONAKTIF
     if (data.session) {
       log('info', 'User auto-signed-in (email confirmation may be disabled)');
     }
@@ -66,6 +145,9 @@ async function signUp() {
   refreshStatus();
 }
 
+// ── SIGN IN (email + password) ──────────────────────────
+// Login klasik. Sukses → Supabase menyimpan access+refresh token
+// ke localStorage OTOMATIS, dan sesi aktif sampai signOut / expire.
 async function signIn() {
   const email = document.getElementById('signinEmail').value.trim();
   const password = document.getElementById('signinPassword').value;
@@ -75,11 +157,21 @@ async function signIn() {
   if (error) {
     log('error', error.message, error);
   } else {
+    // data.user = identitas, data.session = token + expiry
     log('success', 'signIn success', { user: data.user, session: data.session });
   }
   refreshStatus();
 }
 
+// ── SIGN IN via MAGIC LINK / OTP ────────────────────────
+// Supabase kirim email berisi link/kode. User klik link → dibawa
+// balik ke app (redirectTo) dengan token di URL → Supabase
+// otomatis detect & set session. Tidak ada session yang dibuat
+// sampai user benar-benar ngeklik link email.
+//
+//  CATATAN: auth flow pinter ini butuh halaman dibuka via server
+//  (redirect ke http://localhost/...), bukan file:// — itu alasan
+//  kenapa disarankan `pnpm dlx serve .`.
 async function signInOtp() {
   const email = document.getElementById('signinEmail').value.trim();
   log('action', `signInOtp("${email}") — magic link / OTP`);
@@ -92,6 +184,10 @@ async function signInOtp() {
   }
 }
 
+// ── GET SESSION ─────────────────────────────────────────
+// Baca sesi yang ADA DI LOCALSTORAGE (tanpa internet).
+// Di sinilah bedanya sesi vs user: ini cuma lihat token, CEPAT,
+// tapi tidak menjamin user masih valid di server.
 async function getSession() {
   log('action', 'getSession()');
   const { data: { session }, error } = await client.auth.getSession();
@@ -104,6 +200,11 @@ async function getSession() {
   }
 }
 
+// ── GET USER (verified) ─────────────────────────────────
+// Minta data user KE SERVER (verifikasi langsung dari database).
+// Lebih lambat dari getSession, tapi hasilnya trusted —
+// misalnya kunci kamu berpindah device / sesi dicabut admin,
+// getUser() akan gagal walaupun localStorage masih ada token.
 async function getUser() {
   log('action', 'getUser()');
   const { data: { user }, error } = await client.auth.getUser();
@@ -116,6 +217,11 @@ async function getUser() {
   }
 }
 
+// ── RESET PASSWORD ──────────────────────────────────────
+// Kirim email berisi link reset. Link mengarah ke `redirectTo`
+// (halaman ini), disertai token once-use khusus.
+// Di halaman tujuan, kamu biasanya panggil updatePassword() untuk
+// beneran mengganti password.
 async function resetPassword() {
   const email = document.getElementById('resetEmail').value.trim();
   log('action', `resetPassword("${email}")`);
@@ -130,6 +236,10 @@ async function resetPassword() {
   }
 }
 
+// ── UPDATE PASSWORD (biasanya setelah klik link reset) ──
+// Ganti password user yang sedang login. Wajib ada sesi aktif.
+// updateUser() juga bisa dipakai buat update field lain
+// (misal { email, data: { name } }) — bukan cuma password.
 async function updatePassword() {
   const newPassword = document.getElementById('newPassword').value;
   log('action', 'updatePassword()');
@@ -142,6 +252,9 @@ async function updatePassword() {
   }
 }
 
+// ── SIGN OUT ────────────────────────────────────────────
+// Hapus refresh token dari server + bersihkan localStorage.
+// Setelah ini, semua request yang butuh auth bakal 401.
 async function signOut() {
   log('action', 'signOut()');
   const { error } = await client.auth.signOut();
@@ -153,13 +266,27 @@ async function signOut() {
   refreshStatus();
 }
 
-// ─── Auth State Listener ───────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  AUTH STATE LISTENER — "subscribe" ke perubahan auth
+// ══════════════════════════════════════════════════════════
+//
+//  Ini pattern yang paling penting di production: alih-alih
+//  manual ngupdate UI di tiap fungsi, kita daftarkan callback
+//  dan Supabase panggil callback ini setiap kali ada perubahan:
+//  INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
+//  USER_UPDATED, PASSWORD_RECOVERY, dll.
+//
+//  Cara makainya: satu tempat ini cukup — nggak perlu tiap fungsi
+//  auth manggil refreshStatus manual, listener udah ngelakuin itu.
+//
 client.auth.onAuthStateChange((event, session) => {
   log('info', `onAuthStateChange: ${event}`, session ? { user: session.user?.email, expires: session.expires_at } : null);
   refreshStatus();
 });
 
-// ─── Init ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  INIT — jalan sekali pas halaman load
+// ══════════════════════════════════════════════════════════
 log('info', 'Supabase client initialized');
 log('info', `URL: ${SUPABASE_URL}`);
 refreshStatus();
