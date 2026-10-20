@@ -15,10 +15,53 @@
 //    alami).
 //  - Kita cuma "baca" global itu untuk bikin client, hasilnya kita
 //    simpan di variable `client` dengan nama sendiri.
+//  - Kredensial dibaca dari file `.env` via `loadEnv()`.
 //
-const SUPABASE_URL  = 'https://moekyeviywfdkvtcvqsu.supabase.co';
-const SUPABASE_ANON = 'sb_publishable_vRr5qVC9K7DvrMem-ceEyQ_hjHd19-x';
-const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+let SUPABASE_URL  = '';
+let SUPABASE_ANON = '';
+let client = null;
+
+// Fungsi helper untuk mem-parse file .env pada static server
+async function loadEnv() {
+  if (window.ENV && (window.ENV.SUPABASE_URL || window.ENV.SUPABASE_ANON)) {
+    return window.ENV;
+  }
+
+  try {
+    const res = await fetch('.env');
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: File .env tidak dapat diakses.`);
+    }
+    const text = await res.text();
+    const env = {};
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx !== -1) {
+        const key = line.slice(0, eqIdx).trim();
+        let val = line.slice(eqIdx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        env[key] = val;
+      }
+    }
+    return env;
+  } catch (err) {
+    console.warn('Gagal membaca .env:', err);
+    return null;
+  }
+}
+
+// Cek apakah Supabase client sudah siap digunakan
+function checkClient() {
+  if (!client) {
+    log('error', 'Supabase client belum siap. Pastikan file .env ada dan app dijalankan via web server (misal: `pnpm dlx serve .` atau `npx serve .`).');
+    return false;
+  }
+  return true;
+}
 
 // Hitung jumlah log yang tampil (buat badge count di header)
 let logCount = 0;
@@ -84,6 +127,7 @@ function clearLogs() {
 //  memperbarui badge "Authenticated / No Session" + kartu user di kanan.
 //
 async function refreshStatus() {
+  if (!client) return;
   const badge = document.getElementById('statusBadge');
   const card = document.getElementById('userCard');
 
@@ -120,6 +164,7 @@ async function refreshStatus() {
 // Kalau confirm email dimatikan → langsung `data.session` terisi
 // dan user otomatis sudah login.
 async function signUp() {
+  if (!checkClient()) return;
   // Baca input form & trim (buang spasi di pinggir); password TIDAK
   // di-trim karena spasi dalam password itu valid.
   const email = document.getElementById('signupEmail').value.trim();
@@ -149,6 +194,7 @@ async function signUp() {
 // Login klasik. Sukses → Supabase menyimpan access+refresh token
 // ke localStorage OTOMATIS, dan sesi aktif sampai signOut / expire.
 async function signIn() {
+  if (!checkClient()) return;
   const email = document.getElementById('signinEmail').value.trim();
   const password = document.getElementById('signinPassword').value;
   log('action', `signIn("${email}")`);
@@ -173,6 +219,7 @@ async function signIn() {
 //  (redirect ke http://localhost/...), bukan file:// — itu alasan
 //  kenapa disarankan `pnpm dlx serve .`.
 async function signInOtp() {
+  if (!checkClient()) return;
   const email = document.getElementById('signinEmail').value.trim();
   log('action', `signInOtp("${email}") — magic link / OTP`);
 
@@ -189,6 +236,7 @@ async function signInOtp() {
 // Di sinilah bedanya sesi vs user: ini cuma lihat token, CEPAT,
 // tapi tidak menjamin user masih valid di server.
 async function getSession() {
+  if (!checkClient()) return;
   log('action', 'getSession()');
   const { data: { session }, error } = await client.auth.getSession();
   if (error) {
@@ -206,6 +254,7 @@ async function getSession() {
 // misalnya kunci kamu berpindah device / sesi dicabut admin,
 // getUser() akan gagal walaupun localStorage masih ada token.
 async function getUser() {
+  if (!checkClient()) return;
   log('action', 'getUser()');
   const { data: { user }, error } = await client.auth.getUser();
   if (error) {
@@ -223,6 +272,7 @@ async function getUser() {
 // Di halaman tujuan, kamu biasanya panggil updatePassword() untuk
 // beneran mengganti password.
 async function resetPassword() {
+  if (!checkClient()) return;
   const email = document.getElementById('resetEmail').value.trim();
   log('action', `resetPassword("${email}")`);
 
@@ -241,6 +291,7 @@ async function resetPassword() {
 // updateUser() juga bisa dipakai buat update field lain
 // (misal { email, data: { name } }) — bukan cuma password.
 async function updatePassword() {
+  if (!checkClient()) return;
   const newPassword = document.getElementById('newPassword').value;
   log('action', 'updatePassword()');
 
@@ -256,6 +307,7 @@ async function updatePassword() {
 // Hapus refresh token dari server + bersihkan localStorage.
 // Setelah ini, semua request yang butuh auth bakal 401.
 async function signOut() {
+  if (!checkClient()) return;
   log('action', 'signOut()');
   const { error } = await client.auth.signOut();
   if (error) {
@@ -279,14 +331,35 @@ async function signOut() {
 //  Cara makainya: satu tempat ini cukup — nggak perlu tiap fungsi
 //  auth manggil refreshStatus manual, listener udah ngelakuin itu.
 //
-client.auth.onAuthStateChange((event, session) => {
-  log('info', `onAuthStateChange: ${event}`, session ? { user: session.user?.email, expires: session.expires_at } : null);
-  refreshStatus();
-});
+// ══════════════════════════════════════════════════════════
+//  INIT — inisialisasi client dari .env dan jalankan sekali
+// ══════════════════════════════════════════════════════════
+async function init() {
+  const env = await loadEnv();
+  if (!env) {
+    log('error', 'Gagal membaca .env! Jika membuka via file://, jalankan local web server seperti `pnpm dlx serve .` atau `npx serve .`. Pastikan file .env sudah dibuat.');
+    return;
+  }
 
-// ══════════════════════════════════════════════════════════
-//  INIT — jalan sekali pas halaman load
-// ══════════════════════════════════════════════════════════
-log('info', 'Supabase client initialized');
-log('info', `URL: ${SUPABASE_URL}`);
-refreshStatus();
+  SUPABASE_URL = env.SUPABASE_URL || '';
+  SUPABASE_ANON = env.SUPABASE_ANON || env.SUPABASE_ANON_KEY || '';
+
+  if (!SUPABASE_URL || !SUPABASE_ANON) {
+    log('error', 'SUPABASE_URL atau SUPABASE_ANON belum diisi di file .env. Silakan cek file .env kamu.');
+    return;
+  }
+
+  client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+  // Pasang listener auth state change
+  client.auth.onAuthStateChange((event, session) => {
+    log('info', `onAuthStateChange: ${event}`, session ? { user: session.user?.email, expires: session.expires_at } : null);
+    refreshStatus();
+  });
+
+  log('info', 'Supabase client initialized');
+  log('info', `URL: ${SUPABASE_URL}`);
+  refreshStatus();
+}
+
+init();
