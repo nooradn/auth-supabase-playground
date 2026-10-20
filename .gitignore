@@ -11,5 +11,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Node dependencies (jika suatu saat menggunakan package manager)
+# Node dependencies (in case packages are installed)
 node_modules/
+
